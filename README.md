@@ -48,7 +48,23 @@
 
 ---
 
-## 快速开始
+## 一键安装（从 GitHub 直接编译）
+
+```bash
+git clone https://github.com/leosysd/my-btc-bot-5min.git jybot-rs
+cd jybot-rs
+bash install.sh
+```
+
+`install.sh` 自动完成：装 Rust 工具链 → `cargo build --release` → 生成 `.env`
+→ 安装全局命令 `jybot` → 校验配置。装好后任意目录敲 **`jybot`** 即可打开管理面板。
+
+> 更新：以后在面板里选 **「12. 更新程序」** 一键 `git pull + 重新编译 + 重启服务`；
+> 或命令行 `git pull && cargo build --release`。你的 `.env` 不会被覆盖。
+
+---
+
+## 手动开始
 
 ```bash
 # 0) 装 Rust 工具链（一次性）: https://rustup.rs

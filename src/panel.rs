@@ -440,12 +440,58 @@ fn test_api() {
 }
 
 fn update_program() {
-    println!("  从 GitHub 拉取最新版本并重新编译...");
-    println!("  $ git pull");
-    let _ = Command::new("git").arg("pull").status();
-    println!("  $ cargo build --release");
-    let _ = Command::new("cargo").args(["build", "--release"]).status();
-    println!("  完成。若服务在运行，请『重启服务』以加载新版本。");
+    if !Path::new(".git").exists() {
+        println!("  [!] 当前目录不是 git 仓库，无法自动更新。");
+        println!("      请用 `git clone` 方式部署，或手动 `git pull && cargo build --release`。");
+        return;
+    }
+
+    // 更新前先停服务（释放旧二进制 / 准备换新版）
+    let was_running = service::is_running();
+    if was_running {
+        println!("  先停止运行中的服务...");
+        let _ = service::stop();
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+    }
+
+    println!("  $ git pull --ff-only");
+    let pull_ok = Command::new("git")
+        .args(["pull", "--ff-only"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !pull_ok {
+        println!("  [!] git pull 失败（本地有改动或网络问题）。");
+        println!("      可手动处理: git stash && git pull && git stash pop");
+        if was_running {
+            println!("  正在用旧版本恢复服务...");
+            start_service();
+        }
+        return;
+    }
+
+    println!("  $ cargo build --release  （可能需要几分钟）");
+    let build_ok = Command::new("cargo")
+        .args(["build", "--release"])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !build_ok {
+        println!("  [!] 编译失败（见上方错误）。旧版本不受影响。");
+        println!("      Windows 提示：若是 exe 被占用，先退出本面板再更新。");
+        if was_running {
+            start_service();
+        }
+        return;
+    }
+
+    println!("  [OK] 已拉取最新代码并编译成功。");
+    if was_running {
+        println!("  用新版本重启服务...");
+        start_service();
+    }
+    println!("  注意：本菜单自身仍是更新前的进程；请『0 退出』后重新运行");
+    println!("        ./target/release/jybot-rs 以使用最新面板。");
 }
 
 fn view_config() {

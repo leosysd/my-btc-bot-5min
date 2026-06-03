@@ -38,14 +38,30 @@ else
   echo "[3/4] .env 已存在（保留）"
 fi
 
-# 4) 校验
-echo "[4/4] 校验配置 ..."
+# 4) 全局命令 jybot（自动 cd 到安装目录，任何路径都能进面板）
+echo "[4/5] 安装全局命令 jybot ..."
+BIN_DIR="$HOME/.local/bin"
+mkdir -p "$BIN_DIR"
+cat > "$BIN_DIR/jybot" <<EOF
+#!/usr/bin/env bash
+# jybot 启动器（由 install.sh 生成）—— 切到安装目录再运行，确保能找到 .env / scripts
+cd "${ROOT}" && exec ./target/release/jybot-rs "\$@"
+EOF
+chmod +x "$BIN_DIR/jybot"
+case ":$PATH:" in
+  *":$BIN_DIR:"*) echo "      已安装: jybot（$BIN_DIR 在 PATH 中）" ;;
+  *) echo "      已安装: $BIN_DIR/jybot —— 请把它加入 PATH:"
+     echo "        echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc && source ~/.bashrc" ;;
+esac
+
+# 5) 校验
+echo "[5/5] 校验配置 ..."
 ./target/release/jybot-rs check || true
 
 echo "=========================================================================="
-echo "  完成。下一步:"
-echo "    1) 编辑  .env"
-echo "    2) 测试  ./target/release/jybot-rs --test-mode"
-echo "    3) 模拟  ./target/release/jybot-rs --simulation"
-echo "    4) 实盘  .env 设 DRY_RUN=false + LIVE_TRADING=true，再 --live"
+echo "  完成！"
+echo "  打开管理面板（推荐）:   jybot        （或 ./target/release/jybot-rs）"
+echo "  面板里:  5 启动服务 · 6 停止 · 9 切换DRY_RUN · 12 更新程序"
+echo "  以后更新:  面板选 12，或命令行  git pull && cargo build --release"
+echo "  实盘前:  .env 设 DRY_RUN=false + LIVE_TRADING=true（面板第 9 项）"
 echo "=========================================================================="
