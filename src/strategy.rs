@@ -31,6 +31,24 @@ pub struct Strategy {
     trades_in_market: u32,
     position: Option<Position>,
     throttle: HashMap<String, Instant>,
+
+    // follow 模式：一个盘口内沿顺势方向累积加仓(多档)
+    follow_pos: Option<FollowAcc>,
+}
+
+/// follow 模式的累积持仓(一个盘口里多笔顺势加仓汇总)。
+#[derive(Clone)]
+struct FollowAcc {
+    slug: String,
+    condition_id: String,
+    token_id: String,
+    outcome: String,    // 锁定首次顺势方向
+    direction: String,
+    total_size: f64,
+    total_cost: f64,
+    settle_ts: i64,
+    trades: u32,
+    ref_price: f64,
 }
 
 impl Strategy {
@@ -56,6 +74,7 @@ impl Strategy {
             trades_in_market: 0,
             position: None,
             throttle: HashMap::new(),
+            follow_pos: None,
         }
     }
 
@@ -107,6 +126,11 @@ impl Strategy {
     }
 
     pub async fn run_once(&mut self) -> anyhow::Result<()> {
+        // follow 模式：独立的累积加仓逻辑(一个盘口多档)
+        if self.cfg.strategy == "follow" {
+            return self.run_follow().await;
+        }
+
         // ── 市场轮换 ──
         let need_refresh = match &self.current {
             None => true,
@@ -164,11 +188,6 @@ impl Strategy {
     }
 
     async fn evaluate_entry(&mut self, market: &Market) -> anyhow::Result<()> {
-        // 顺势做市影子(复刻 JetFadil)：按窗口内 drift 方向接单，持有到结算。
-        if self.cfg.strategy == "follow" {
-            return self.evaluate_follow(market).await;
-        }
-
         let secs_left = market.seconds_left();
         let secs_since = market.seconds_since_start();
 
@@ -308,111 +327,167 @@ impl Strategy {
         Ok(())
     }
 
-    /// 顺势做市影子：按窗口内 drift 方向接单(顺势)，持有到结算。复刻 JetFadil 的
-    /// 核心 edge——市场对短期已实现动量"反应不足"，顺势那一侧 token 定价偏低。
-    /// dry-run 下用 best_ask 模拟成交(taker，会高估成本；真实 maker 挂单买价更优)。
-    async fn evaluate_follow(&mut self, market: &Market) -> anyhow::Result<()> {
-        let secs_left = market.seconds_left();
-        let secs_since = market.seconds_since_start();
-        if secs_left <= self.cfg.late_entry_cutoff_sec {
+    // ════════ follow 模式：一个盘口内顺势方向多档累积加仓 ════════
+    /// 复刻 JetFadil：窗口内标的朝某方向走时,顺势接那一侧,**一个盘口里反复加仓**
+    /// 直到累积名义达 MAX_POSITION_USDC 或次数达 MAX_TRADES_PER_MARKET(=0 不限),
+    /// 持有到结算。dry-run 用 best_ask 模拟(taker,偏保守)。
+    async fn run_follow(&mut self) -> anyhow::Result<()> {
+        let market = self.clob.find_current_market().await;
+
+        // 跨市场：先结算上一个累积仓
+        if let Some(acc) = self.follow_pos.clone() {
+            let rolled = market.as_ref().map(|m| m.slug != acc.slug).unwrap_or(true);
+            if rolled || self.now() >= acc.settle_ts {
+                self.settle_follow(acc).await;
+            }
+        }
+
+        let Some(market) = market else {
+            if self.throttled("nomarket", 20.0) {
+                return Ok(());
+            }
+            info!("[wait] 当前无活跃 BTC {} 市场，扫描中...", self.cfg.market_interval);
+            return Ok(());
+        };
+        if self.current.as_ref().map(|c| c.slug != market.slug).unwrap_or(true) {
+            self.on_new_market(&market).await;
+            self.current = Some(market.clone());
+        }
+
+        self.try_add_follow(&market).await
+    }
+
+    /// 评估并在顺势方向加一笔(若满足条件)。
+    async fn try_add_follow(&mut self, market: &Market) -> anyhow::Result<()> {
+        if market.seconds_left() <= self.cfg.late_entry_cutoff_sec {
             return Ok(());
         }
-        if secs_since < self.cfg.early_entry_cutoff_sec {
+        if market.seconds_since_start() < self.cfg.early_entry_cutoff_sec {
             return Ok(());
         }
-        if self.trades_in_market >= self.cfg.max_trades_per_market {
+        // 次数上限(0 = 不限)
+        let trades = self.follow_pos.as_ref().map(|a| a.trades).unwrap_or(0);
+        if self.cfg.max_trades_per_market > 0 && trades >= self.cfg.max_trades_per_market {
+            return Ok(());
+        }
+        // 加仓节流：每 poll 周期最多一笔
+        if self.throttled(&format!("rebuy:{}", market.slug), self.cfg.poll_interval_sec.max(1.0)) {
             return Ok(());
         }
 
         let sig = signal::compute(&self.price, market.start_ts, self.cfg.signal_lookback_min);
         if sig.direction.is_none() {
-            if !self.throttled(&format!("nosig:{}", market.slug), 15.0) {
-                info!("[skip] {}: {}", market.slug, sig.reason);
-            }
             return Ok(());
         }
         let drift_bps = sig.drift * 10_000.0;
         if drift_bps.abs() < self.cfg.drift_entry_bps {
-            if !self.throttled(&format!("nodrift:{}", market.slug), 10.0) {
-                info!(
-                    "[skip] {}: drift {:+.1}bps 不足 {:.1}bps(动量未形成)",
-                    market.slug, drift_bps, self.cfg.drift_entry_bps
-                );
-            }
             return Ok(());
         }
-
-        // 顺势方向：已涨->接UP，已跌->接DOWN
         let (direction, outcome) = if sig.drift > 0.0 { ("UP", "Up") } else { ("DOWN", "Down") };
+
+        // 已有累积仓则必须同方向(不换向,避免双边复杂)
+        if let Some(acc) = &self.follow_pos {
+            if acc.direction != direction {
+                return Ok(());
+            }
+        }
+
         let Some(token_id) = market.token_for(outcome).map(|s| s.to_string()) else {
             return Ok(());
         };
         let Some(book) = self.book_for(&token_id).await else {
-            if !self.throttled(&format!("nobook:{}", market.slug), 15.0) {
-                warn!("[skip] {} {}: 盘口为空", market.slug, outcome);
-            }
             return Ok(());
         };
         let Some(ask) = book.best_ask().map(dec_f64) else {
             return Ok(());
         };
-
-        // 顺势别追太贵（价格上限保护）
-        if ask > self.cfg.max_entry_price {
-            if !self.throttled(&format!("toohigh:{}", market.slug), 10.0) {
+        if ask > self.cfg.max_entry_price || ask < self.cfg.min_entry_price {
+            return Ok(());
+        }
+        // 累积名义上限
+        let cur_cost = self.follow_pos.as_ref().map(|a| a.total_cost).unwrap_or(0.0);
+        let add_notional = self.cfg.fixed_shares * ask;
+        if cur_cost + add_notional > self.cfg.max_position_usdc {
+            if !self.throttled(&format!("full:{}", market.slug), 15.0) {
                 info!(
-                    "[skip] {} 顺势{} 但 ask {:.3} > MAX_ENTRY_PRICE {}",
-                    market.slug, outcome, ask, self.cfg.max_entry_price
+                    "[follow] {} 累积仓位已满 (${:.2} + ${:.2} > MAX_POSITION_USDC ${})",
+                    market.slug, cur_cost, add_notional, self.cfg.max_position_usdc
                 );
             }
             return Ok(());
         }
-        let size = self.cfg.fixed_shares;
-        let notional = size * ask;
-        if notional > self.cfg.max_position_usdc {
-            return Ok(());
-        }
 
-        info!(
-            "[follow] {} drift={:+.1}bps -> 顺势 BUY {} ask={:.3} size={} mode={}",
-            market.slug,
-            drift_bps,
-            outcome,
-            ask,
-            size,
-            if self.cfg.can_trade_live() { "LIVE" } else { "PAPER" }
-        );
-        let result = self.exec.place_buy(&token_id, outcome, &book, size).await;
+        let result = self.exec.place_buy(&token_id, outcome, &book, self.cfg.fixed_shares).await;
         if !result.is_filled() {
-            warn!("[follow] {} 未成交: {} ({})", market.slug, result.status, result.reason);
             return Ok(());
         }
-        self.trades_in_market += 1;
-        let pos = Position {
-            market_slug: market.slug.clone(),
+        let acc = self.follow_pos.get_or_insert_with(|| FollowAcc {
+            slug: market.slug.clone(),
             condition_id: market.condition_id.clone(),
             token_id: token_id.clone(),
             outcome: outcome.to_string(),
             direction: direction.to_string(),
-            entry_price: result.avg_price,
-            size: result.filled_size,
-            entry_ts: self.now(),
+            total_size: 0.0,
+            total_cost: 0.0,
             settle_ts: market.end_ts,
-            p_model: ask,
+            trades: 0,
             ref_price: sig.reference.unwrap_or(0.0),
-            status: "OPEN".to_string(),
-            exit_price: None,
-            exit_reason: String::new(),
-            outcome_result: String::new(),
-            pnl_usd: 0.0,
-        };
-        self.log.append(pos.to_record());
+        });
+        acc.total_size += result.filled_size;
+        acc.total_cost += result.filled_size * result.avg_price;
+        acc.trades += 1;
+        let avg = acc.total_cost / acc.total_size.max(1e-9);
         info!(
-            "[POSITION] OPEN(顺势) {} {}@{:.3} -> 持有到结算",
-            outcome, result.filled_size, result.avg_price
+            "[follow] {} drift={:+.1}bps 顺势 BUY {} {}@{:.3} | 累积 #{} 共{:.0}份 均价{:.3} 名义${:.2}",
+            market.slug, drift_bps, outcome, result.filled_size, result.avg_price,
+            acc.trades, acc.total_size, avg, acc.total_cost
         );
-        self.position = Some(pos);
         Ok(())
+    }
+
+    /// 结算 follow 累积仓(按真实结算结果, 整笔记一条 paper 记录)。
+    async fn settle_follow(&mut self, acc: FollowAcc) {
+        self.follow_pos = None;
+        let resolved: Option<f64> = match self.clob.fetch_winning_outcome(&acc.slug).await {
+            Some(w) => Some(if w.eq_ignore_ascii_case(&acc.outcome) { 1.0 } else { 0.0 }),
+            None => match (self.price.latest_price(), acc.ref_price) {
+                (Some(spot), r) if r > 0.0 => {
+                    let up_won = spot > r;
+                    let won = (acc.direction == "UP" && up_won) || (acc.direction == "DOWN" && !up_won);
+                    Some(if won { 1.0 } else { 0.0 })
+                }
+                _ => None,
+            },
+        };
+        let avg = acc.total_cost / acc.total_size.max(1e-9);
+        let value = resolved.unwrap_or(avg);
+        let pnl = value * acc.total_size - acc.total_cost;
+        let mut pos = Position {
+            market_slug: acc.slug.clone(),
+            condition_id: acc.condition_id.clone(),
+            token_id: acc.token_id.clone(),
+            outcome: acc.outcome.clone(),
+            direction: acc.direction.clone(),
+            entry_price: avg,
+            size: acc.total_size,
+            entry_ts: self.now(),
+            settle_ts: acc.settle_ts,
+            p_model: avg,
+            ref_price: acc.ref_price,
+            status: "CLOSED".to_string(),
+            exit_price: Some(value),
+            exit_reason: format!("follow结算({}笔累积)", acc.trades),
+            outcome_result: if value >= 0.5 { "WIN".into() } else { "LOSS".into() },
+            pnl_usd: pnl,
+        };
+        // 整笔记一条
+        self.log.append(pos.to_record());
+        pos.status = "CLOSED".into();
+        info!(
+            "[SETTLE] {} {} {}笔/{:.0}份 均价{:.3} value={:.0} -> {} pnl=${:+.4}",
+            acc.slug, acc.outcome, acc.trades, acc.total_size, avg, value,
+            pos.outcome_result, pnl
+        );
     }
 
     async fn manage_position(&mut self) -> anyhow::Result<()> {
@@ -420,10 +495,6 @@ impl Strategy {
         // 结算
         if self.now() >= pos.settle_ts {
             self.settle_position(pos).await;
-            return Ok(());
-        }
-        // 顺势做市模式：持有到结算，不止盈/止损。
-        if self.cfg.strategy == "follow" {
             return Ok(());
         }
         let Some(book) = self.book_for(&pos.token_id).await else {
