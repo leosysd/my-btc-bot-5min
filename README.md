@@ -48,10 +48,21 @@
 
 ---
 
-## 一键安装（拉 GitHub 预编译二进制，VPS 免装 Rust / 免编译）
+## 安装（拉 GitHub 预编译二进制，VPS 免装 Rust / 免编译）
 
 二进制由 **GitHub Actions 云端编译**并发布到 **Releases**。VPS 直接拉现成的，
 小内存机器也不会因编译 OOM。
+
+### 方式一：一行 curl 远程安装（最简，无需 git）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leosysd/my-btc-bot-5min/main/get.sh | bash
+```
+
+下载预编译二进制 + `.env.example` + `place_order.py` → 生成 `.env` → 装全局命令 `jybot`。
+默认装到 `~/jybot-rs`（可 `JYBOT_DIR=/opt/jybot-rs` 覆盖）。装好直接敲 **`jybot`** 进面板。
+
+### 方式二：git clone + install.sh
 
 ```bash
 git clone https://github.com/leosysd/my-btc-bot-5min.git jybot-rs
@@ -59,8 +70,7 @@ cd jybot-rs
 bash install.sh
 ```
 
-`install.sh` 流程：**优先从 Releases 下载预编译二进制**（拉不到才回退装 Rust 编译）
-→ 生成 `.env` → 安装全局命令 `jybot` → 校验配置。装好后任意目录敲 **`jybot`** 进面板。
+两种方式都**优先下载预编译二进制**（拉不到才回退装 Rust 编译），并安装全局命令 `jybot`。
 
 > **更新**：面板选 **「12. 更新程序」** —— 优先**下载最新预编译二进制**（秒级、免编译）
 > → 自动重启服务；拉不到才回退源码编译。你的 `.env` 永远不会被覆盖。
