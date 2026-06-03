@@ -64,6 +64,8 @@ pub struct Config {
     pub strategy: String,
     // 顺势接单所需的最小 drift(bps, 1bp=0.01%)。窗口内标的涨跌超过此值才顺势接。
     pub drift_entry_bps: f64,
+    // Polymarket 对【赢利部分】收的手续费(bps)。默认 700=7%(实测:10份@0.4赢取9.58)。
+    pub fee_bps: f64,
 
     // WS 数据新鲜度阈值（秒）：超过则回退 REST
     pub ws_staleness_sec: i64,
@@ -236,6 +238,7 @@ pub fn load(env_path: Option<&str>) -> Result<Config> {
         price_feed,
         strategy: get_or("STRATEGY", "momentum").to_lowercase(),
         drift_entry_bps: get_f64("DRIFT_ENTRY_BPS", 5.0),
+        fee_bps: get_f64("FEE_BPS", 700.0),
 
         ws_staleness_sec: get_i64("WS_STALENESS_SEC", 8),
 

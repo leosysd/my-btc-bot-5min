@@ -461,7 +461,10 @@ impl Strategy {
         };
         let avg = acc.total_cost / acc.total_size.max(1e-9);
         let value = resolved.unwrap_or(avg);
-        let pnl = value * acc.total_size - acc.total_cost;
+        // Polymarket 对赢利收手续费(只在赢/有正毛利时收)
+        let gross = value * acc.total_size - acc.total_cost;
+        let fee = if gross > 0.0 { self.cfg.fee_bps / 10_000.0 * gross } else { 0.0 };
+        let pnl = gross - fee;
         let mut pos = Position {
             market_slug: acc.slug.clone(),
             condition_id: acc.condition_id.clone(),
@@ -484,9 +487,9 @@ impl Strategy {
         self.log.append(pos.to_record());
         pos.status = "CLOSED".into();
         info!(
-            "[SETTLE] {} {} {}笔/{:.0}份 均价{:.3} value={:.0} -> {} pnl=${:+.4}",
+            "[SETTLE] {} {} {}笔/{:.0}份 均价{:.3} value={:.0} 毛${:+.2} 费${:.2} -> {} 净pnl=${:+.4}",
             acc.slug, acc.outcome, acc.trades, acc.total_size, avg, value,
-            pos.outcome_result, pnl
+            gross, fee, pos.outcome_result, pnl
         );
     }
 
@@ -557,7 +560,9 @@ impl Strategy {
             }
         };
         let value = resolved.unwrap_or(pos.entry_price);
-        let pnl = (value - pos.entry_price) * pos.size;
+        let gross = (value - pos.entry_price) * pos.size;
+        let fee = if gross > 0.0 { self.cfg.fee_bps / 10_000.0 * gross } else { 0.0 };
+        let pnl = gross - fee;
         pos.status = "CLOSED".into();
         pos.exit_price = Some(value);
         pos.exit_reason = if resolved.is_some() {
