@@ -11,6 +11,7 @@
 //!   jybot-rs check              检查配置
 //!   可选: --interval 5m|15m
 
+mod backtest;
 mod clob;
 mod config;
 mod executor;
@@ -57,6 +58,11 @@ fn main() -> Result<()> {
         "" | "menu" | "panel" => return panel::run(),
         "stats" => return cmd_stats(),
         "check" => return cmd_check(),
+        "backtest" => {
+            let days = arg_value(&args, "--days").and_then(|s| s.parse().ok()).unwrap_or(3);
+            let offset = arg_value(&args, "--entry-min").and_then(|s| s.parse().ok()).unwrap_or(2);
+            return backtest::run(days, offset);
+        }
         "start" => return cmd_service_start(),
         "stop" => {
             let stopped = service::stop()?;
@@ -347,6 +353,7 @@ fn print_help() {
         \x20 jybot-rs logs             查看服务日志\n\
         \x20 jybot-rs stats            查看胜率/PnL\n\
         \x20 jybot-rs check            检查配置\n\
+        \x20 jybot-rs backtest         回测信号方向准确率 (--days N --entry-min M)\n\
         \x20 选项: --interval 5m|15m"
     );
 }
