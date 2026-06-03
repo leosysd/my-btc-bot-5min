@@ -11,6 +11,10 @@ on:
 permissions:
   contents: write
 
+# 让 JS actions 使用 Node 24（2026-06-16 起 Node 20 被弃用），消除告警并避免未来失效。
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: build ${{ matrix.name }}
