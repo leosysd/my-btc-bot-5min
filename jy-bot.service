@@ -1,0 +1,35 @@
+[Unit]
+Description=Polymarket BTC 5-min UP/DOWN Trading Bot (jybot-rs, Rust core)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# --- EDIT THESE for your machine -------------------------------------------
+# 运行用户（生产环境勿用 root）:
+User=jybot
+# 项目目录（含 .env 与 target/release/jybot-rs）:
+WorkingDirectory=/opt/jybot-rs
+# 启动命令。确认无误后把 --simulation 改为 --live（需先 DRY_RUN=false + LIVE_TRADING=true）。
+ExecStart=/opt/jybot-rs/target/release/jybot-rs --simulation
+# ---------------------------------------------------------------------------
+
+# 从 .env 读取配置（systemd 读 KEY=VALUE 行）
+EnvironmentFile=/opt/jybot-rs/.env
+
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=0
+
+# 日志走 journal: journalctl -u jy-bot -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=jy-bot
+
+# 安全加固
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
