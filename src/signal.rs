@@ -8,6 +8,7 @@ use crate::price_ws::PriceFeed;
 pub struct Signal {
     pub direction: Option<&'static str>, // "UP" | "DOWN" | None
     pub p_up: f64,
+    pub drift: f64, // 窗口起点至今的标的涨跌(比率)，顺势策略用
     pub reason: String,
     pub spot: Option<f64>,
     pub reference: Option<f64>,
@@ -18,7 +19,7 @@ impl Signal {
         1.0 - self.p_up
     }
     pub fn none(reason: &str) -> Self {
-        Signal { direction: None, p_up: 0.5, reason: reason.to_string(), spot: None, reference: None }
+        Signal { direction: None, p_up: 0.5, drift: 0.0, reason: reason.to_string(), spot: None, reference: None }
     }
 }
 
@@ -77,6 +78,7 @@ pub fn compute(feed: &PriceFeed, window_start_ts: i64, lookback_min: i64) -> Sig
     Signal {
         direction: Some(direction),
         p_up,
+        drift,
         reason,
         spot: Some(spot),
         reference: Some(reference),

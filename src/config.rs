@@ -60,6 +60,11 @@ pub struct Config {
     pub signal_lookback_min: i64,
     pub price_feed: String, // coinbase | binance
 
+    // 策略模式: "momentum"(原赌方向) | "follow"(顺势做市影子, 复刻 JetFadil)
+    pub strategy: String,
+    // 顺势接单所需的最小 drift(bps, 1bp=0.01%)。窗口内标的涨跌超过此值才顺势接。
+    pub drift_entry_bps: f64,
+
     // WS 数据新鲜度阈值（秒）：超过则回退 REST
     pub ws_staleness_sec: i64,
 
@@ -229,6 +234,8 @@ pub fn load(env_path: Option<&str>) -> Result<Config> {
         poll_interval_sec: get_f64("POLL_INTERVAL_SEC", 3.0),
         signal_lookback_min: get_i64("SIGNAL_LOOKBACK_MIN", 3),
         price_feed,
+        strategy: get_or("STRATEGY", "momentum").to_lowercase(),
+        drift_entry_bps: get_f64("DRIFT_ENTRY_BPS", 5.0),
 
         ws_staleness_sec: get_i64("WS_STALENESS_SEC", 8),
 

@@ -164,6 +164,11 @@ impl Strategy {
     }
 
     async fn evaluate_entry(&mut self, market: &Market) -> anyhow::Result<()> {
+        // 顺势做市影子(复刻 JetFadil)：按窗口内 drift 方向接单，持有到结算。
+        if self.cfg.strategy == "follow" {
+            return self.evaluate_follow(market).await;
+        }
+
         let secs_left = market.seconds_left();
         let secs_since = market.seconds_since_start();
 
@@ -303,11 +308,122 @@ impl Strategy {
         Ok(())
     }
 
+    /// 顺势做市影子：按窗口内 drift 方向接单(顺势)，持有到结算。复刻 JetFadil 的
+    /// 核心 edge——市场对短期已实现动量"反应不足"，顺势那一侧 token 定价偏低。
+    /// dry-run 下用 best_ask 模拟成交(taker，会高估成本；真实 maker 挂单买价更优)。
+    async fn evaluate_follow(&mut self, market: &Market) -> anyhow::Result<()> {
+        let secs_left = market.seconds_left();
+        let secs_since = market.seconds_since_start();
+        if secs_left <= self.cfg.late_entry_cutoff_sec {
+            return Ok(());
+        }
+        if secs_since < self.cfg.early_entry_cutoff_sec {
+            return Ok(());
+        }
+        if self.trades_in_market >= self.cfg.max_trades_per_market {
+            return Ok(());
+        }
+
+        let sig = signal::compute(&self.price, market.start_ts, self.cfg.signal_lookback_min);
+        if sig.direction.is_none() {
+            if !self.throttled(&format!("nosig:{}", market.slug), 15.0) {
+                info!("[skip] {}: {}", market.slug, sig.reason);
+            }
+            return Ok(());
+        }
+        let drift_bps = sig.drift * 10_000.0;
+        if drift_bps.abs() < self.cfg.drift_entry_bps {
+            if !self.throttled(&format!("nodrift:{}", market.slug), 10.0) {
+                info!(
+                    "[skip] {}: drift {:+.1}bps 不足 {:.1}bps(动量未形成)",
+                    market.slug, drift_bps, self.cfg.drift_entry_bps
+                );
+            }
+            return Ok(());
+        }
+
+        // 顺势方向：已涨->接UP，已跌->接DOWN
+        let (direction, outcome) = if sig.drift > 0.0 { ("UP", "Up") } else { ("DOWN", "Down") };
+        let Some(token_id) = market.token_for(outcome).map(|s| s.to_string()) else {
+            return Ok(());
+        };
+        let Some(book) = self.book_for(&token_id).await else {
+            if !self.throttled(&format!("nobook:{}", market.slug), 15.0) {
+                warn!("[skip] {} {}: 盘口为空", market.slug, outcome);
+            }
+            return Ok(());
+        };
+        let Some(ask) = book.best_ask().map(dec_f64) else {
+            return Ok(());
+        };
+
+        // 顺势别追太贵（价格上限保护）
+        if ask > self.cfg.max_entry_price {
+            if !self.throttled(&format!("toohigh:{}", market.slug), 10.0) {
+                info!(
+                    "[skip] {} 顺势{} 但 ask {:.3} > MAX_ENTRY_PRICE {}",
+                    market.slug, outcome, ask, self.cfg.max_entry_price
+                );
+            }
+            return Ok(());
+        }
+        let size = self.cfg.fixed_shares;
+        let notional = size * ask;
+        if notional > self.cfg.max_position_usdc {
+            return Ok(());
+        }
+
+        info!(
+            "[follow] {} drift={:+.1}bps -> 顺势 BUY {} ask={:.3} size={} mode={}",
+            market.slug,
+            drift_bps,
+            outcome,
+            ask,
+            size,
+            if self.cfg.can_trade_live() { "LIVE" } else { "PAPER" }
+        );
+        let result = self.exec.place_buy(&token_id, outcome, &book, size).await;
+        if !result.is_filled() {
+            warn!("[follow] {} 未成交: {} ({})", market.slug, result.status, result.reason);
+            return Ok(());
+        }
+        self.trades_in_market += 1;
+        let pos = Position {
+            market_slug: market.slug.clone(),
+            condition_id: market.condition_id.clone(),
+            token_id: token_id.clone(),
+            outcome: outcome.to_string(),
+            direction: direction.to_string(),
+            entry_price: result.avg_price,
+            size: result.filled_size,
+            entry_ts: self.now(),
+            settle_ts: market.end_ts,
+            p_model: ask,
+            ref_price: sig.reference.unwrap_or(0.0),
+            status: "OPEN".to_string(),
+            exit_price: None,
+            exit_reason: String::new(),
+            outcome_result: String::new(),
+            pnl_usd: 0.0,
+        };
+        self.log.append(pos.to_record());
+        info!(
+            "[POSITION] OPEN(顺势) {} {}@{:.3} -> 持有到结算",
+            outcome, result.filled_size, result.avg_price
+        );
+        self.position = Some(pos);
+        Ok(())
+    }
+
     async fn manage_position(&mut self) -> anyhow::Result<()> {
         let pos = self.position.clone().unwrap();
         // 结算
         if self.now() >= pos.settle_ts {
             self.settle_position(pos).await;
+            return Ok(());
+        }
+        // 顺势做市模式：持有到结算，不止盈/止损。
+        if self.cfg.strategy == "follow" {
             return Ok(());
         }
         let Some(book) = self.book_for(&pos.token_id).await else {
