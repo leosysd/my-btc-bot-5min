@@ -15,7 +15,9 @@ mod clob;
 mod config;
 mod executor;
 mod market_ws;
+mod panel;
 mod price_ws;
+mod service;
 mod signal;
 mod state;
 mod strategy;
@@ -37,25 +39,46 @@ enum Mode {
     Live,
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let first = args.first().map(|s| s.as_str()).unwrap_or("");
+
+    // 管理面板（无参数 / menu / panel）+ 服务子命令 —— 同步，不进 tokio
+    match first {
+        "" | "menu" | "panel" => return panel::run(),
+        "stats" => return cmd_stats(),
+        "check" => return cmd_check(),
+        "start" => return cmd_service_start(),
+        "stop" => {
+            let stopped = service::stop()?;
+            println!("{}", if stopped { "已停止服务" } else { "服务未在运行" });
+            return Ok(());
+        }
+        "restart" => {
+            service::stop().ok();
+            std::thread::sleep(std::time::Duration::from_millis(800));
+            return cmd_service_start();
+        }
+        "status" => return cmd_service_status(),
+        "logs" => {
+            println!("{}", service::tail_log(80));
+            return Ok(());
+        }
+        "-h" | "--help" | "help" => {
+            print_help();
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    // 交易路径：手动构建 tokio 运行时
+    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+    rt.block_on(async_main(args))
+}
+
+async fn async_main(args: Vec<String>) -> Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     tracing_subscriber::fmt().with_target(false).with_level(true).init();
-
-    let args: Vec<String> = std::env::args().skip(1).collect();
-
-    // 子命令（非交易）
-    if let Some(first) = args.first() {
-        match first.as_str() {
-            "stats" => return cmd_stats(),
-            "check" => return cmd_check(),
-            "-h" | "--help" | "help" => {
-                print_help();
-                return Ok(());
-            }
-            _ => {}
-        }
-    }
 
     // 周期覆盖
     let interval_override = arg_value(&args, "--interval");
@@ -118,7 +141,8 @@ async fn main() -> Result<()> {
         info!("{line}");
     }
 
-    if mode == Mode::Live {
+    // 后台服务模式（JY_ASSUME_YES=1）跳过交互确认；前台 --live 仍需手动 YES。
+    if mode == Mode::Live && std::env::var("JY_ASSUME_YES").as_deref() != Ok("1") {
         println!("\n!!! LIVE 实盘 —— 将向 Polymarket 提交真实订单 !!!");
         println!("输入大写 YES 继续，其它任意键取消：");
         let mut input = String::new();
@@ -261,6 +285,40 @@ fn cmd_stats() -> Result<()> {
     Ok(())
 }
 
+fn cmd_service_start() -> Result<()> {
+    if let service::Status::Running { pid, mode } = service::status() {
+        println!("服务已在运行 (PID {pid}, {mode})");
+        return Ok(());
+    }
+    let cfg = config::load(None)?;
+    let (flag, assume_yes) = if cfg.can_trade_live() {
+        if std::env::var("JY_ASSUME_YES").as_deref() != Ok("1") {
+            eprintln!("实盘需显式确认：用面板『启动服务』，或设 JY_ASSUME_YES=1 后再 `jybot-rs start`。");
+            std::process::exit(2);
+        }
+        let missing = cfg.missing_credentials();
+        if !missing.is_empty() {
+            eprintln!("缺少凭证: {}", missing.join(", "));
+            std::process::exit(2);
+        }
+        ("--live", true)
+    } else {
+        ("--simulation", false)
+    };
+    let pid = service::start(flag, assume_yes)?;
+    println!("服务已后台启动 (PID {pid}, {})", flag.trim_start_matches("--"));
+    println!("查看日志: jybot-rs logs   停止: jybot-rs stop");
+    Ok(())
+}
+
+fn cmd_service_status() -> Result<()> {
+    match service::status() {
+        service::Status::Running { pid, mode } => println!("服务: 运行中 (PID {pid}, {mode})"),
+        service::Status::Stopped => println!("服务: 已停止"),
+    }
+    Ok(())
+}
+
 fn arg_value(args: &[String], key: &str) -> Option<String> {
     args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).cloned()
 }
@@ -269,9 +327,15 @@ fn print_help() {
     println!(
         "jybot-rs — Polymarket BTC UP/DOWN 交易机器人 (Rust)\n\n\
         用法:\n\
+        \x20 jybot-rs                  打开管理面板（菜单）\n\
         \x20 jybot-rs --test-mode      有界纸面演示\n\
-        \x20 jybot-rs --simulation     纸面模拟（默认）\n\
-        \x20 jybot-rs --live           实盘（需安全锁 + 确认）\n\
+        \x20 jybot-rs --simulation     纸面模拟（前台）\n\
+        \x20 jybot-rs --live           实盘（前台，需安全锁 + 确认）\n\
+        \x20 jybot-rs start            后台常驻启动服务\n\
+        \x20 jybot-rs stop             停止后台服务\n\
+        \x20 jybot-rs restart          重启后台服务\n\
+        \x20 jybot-rs status           查看服务状态\n\
+        \x20 jybot-rs logs             查看服务日志\n\
         \x20 jybot-rs stats            查看胜率/PnL\n\
         \x20 jybot-rs check            检查配置\n\
         \x20 选项: --interval 5m|15m"

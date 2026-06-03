@@ -42,6 +42,8 @@
 | `src/strategy.rs` | 入场过滤、持仓管理、TP/SL、结算 |
 | `src/executor.rs` | 固定份额限价单；DRY 模拟 / LIVE 调 Python |
 | `src/state.rs` | 持仓 + 纸面记录 + 胜率/PnL |
+| `src/panel.rs` | 交互式管理面板（菜单：配置/服务/统计/日志…） |
+| `src/service.rs` | 后台常驻服务（启/停/重启/状态/日志，PID 文件） |
 | `scripts/place_order.py` | LIVE 真实下单（官方 py-clob-client，自包含） |
 
 ---
@@ -59,12 +61,51 @@ nano .env
 # 2) 编译
 cargo build --release        # 产物: target/release/jybot-rs
 
-# 3) 运行
-./target/release/jybot-rs --test-mode     # 有界纸面演示
-./target/release/jybot-rs --simulation    # WS 事件驱动纸面模拟
+# 3) 推荐：打开管理面板（菜单式，新手首选）
+./target/release/jybot-rs                  # 无参数 = 管理面板
+
+# 或直接用命令行：
+./target/release/jybot-rs --test-mode     # 有界纸面演示（前台）
+./target/release/jybot-rs --simulation    # WS 事件驱动纸面模拟（前台）
 ./target/release/jybot-rs check           # 检查配置
 ./target/release/jybot-rs stats           # 胜率 / PnL / 交易统计
 # 可选: --interval 5m|15m
+```
+
+## 管理面板（菜单）
+
+`./target/release/jybot-rs`（不带参数）打开交互式管理菜单，顶部实时显示
+**服务状态 / 入场策略 / DRY_RUN 模式**：
+
+```
+============================================================
+   ☰  JY Bot 管理菜单 (jybot-rs)
+============================================================
+  服务: 运行中 (PID 48140 / simulation)   入场: 动量   DRY_RUN: 模拟
+------------------------------------------------------------
+  1. 初始化 / 修改配置        7. 重启服务
+  2. 查看当前配置            8. 查看实时日志
+  3. 测试 API 连接          9. 切换 DRY_RUN 模式
+  4. 交易统计表            10. 调策略参数
+  5. 启动服务（后台常驻）   11. 清空模拟数据
+  6. 停止服务              12. 更新程序（git pull + 编译）
+  0. 退出
+```
+
+- 改 `.env` 前自动备份；私钥/密钥显示打码；把 `DRY_RUN=false`/`LIVE_TRADING=true`
+  等危险开关打开需输入大写 `YES`。
+- 「启动服务」= **后台常驻**：面板退出后机器人继续跑；可随时停止/重启/看状态。
+
+## 后台常驻服务（命令行）
+
+不进面板也能直接管理后台服务：
+
+```bash
+./target/release/jybot-rs start      # 后台常驻启动（按 .env 决定 模拟/实盘）
+./target/release/jybot-rs status     # 运行中(PID)/已停止
+./target/release/jybot-rs logs       # 查看服务日志(logs/service.log)
+./target/release/jybot-rs restart    # 重启
+./target/release/jybot-rs stop       # 停止
 ```
 
 > 一键安装：`bash install.sh`（装 Rust、编译、生成 .env、校验配置）。

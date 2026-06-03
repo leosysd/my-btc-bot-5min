@@ -16,6 +16,8 @@ target/
 paper_trades.json
 *.log
 logs/
+jybot.pid
+.env.backup-*
 
 # Python
 __pycache__/
