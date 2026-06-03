@@ -7,7 +7,7 @@
 //! 任一不满足即为纸面模拟。`can_trade_live()` 表达后两把锁。
 
 use anyhow::{bail, Result};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -144,17 +144,13 @@ fn get_u8(key: &str, default: u8) -> u8 {
     get(key).and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
-/// 解析 .env 路径：JY_ENV_PATH → ./.env（仓库根）→ ../.env
+/// 解析 .env 路径：JY_ENV_PATH 优先，否则全局唯一的 `~/.jybot/.env`。
+/// 这保证无论从哪个目录启动，读到的都是同一份系统级配置。
 pub fn default_env_path() -> String {
     if let Some(p) = get("JY_ENV_PATH") {
         return p;
     }
-    for cand in [".env", "../.env", "../../.env"] {
-        if Path::new(cand).exists() {
-            return cand.to_string();
-        }
-    }
-    ".env".to_string()
+    crate::paths::env_file().to_string_lossy().to_string()
 }
 
 fn normalize_interval(raw: &str) -> (String, i64) {
@@ -185,11 +181,6 @@ pub fn load(env_path: Option<&str>) -> Result<Config> {
     } else {
         "coinbase".to_string()
     };
-
-    let base_dir: PathBuf = Path::new(&path)
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
 
     let cfg = Config {
         market_interval,
@@ -241,8 +232,8 @@ pub fn load(env_path: Option<&str>) -> Result<Config> {
 
         ws_staleness_sec: get_i64("WS_STALENESS_SEC", 8),
 
-        paper_trades_path: base_dir.join(get_or("PAPER_TRADES_FILE", "paper_trades.json")),
-        place_order_script: base_dir.join("scripts/place_order.py"),
+        paper_trades_path: crate::paths::paper_trades(),
+        place_order_script: crate::paths::place_order_script(),
         python_bin: get_or("PYTHON_BIN", "python3"),
     };
 

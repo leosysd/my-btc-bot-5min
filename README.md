@@ -84,6 +84,26 @@ CI 配置见 `.github/workflows/release.yml`（Linux + Windows 二进制）。
 
 ---
 
+## 系统级配置（全局唯一）
+
+机器人的配置/状态/日志都集中在**一个固定的全局目录**（默认 `~/.jybot`，可用
+环境变量 `JYBOT_HOME` 覆盖）。无论你从哪个目录、用什么方式启动，读写的都是
+**同一份**——你在面板里改的就是整台机器人的唯一设置，不会因为目录不同而分裂。
+
+```
+~/.jybot/
+  .env                 ← 唯一配置（面板 1/10 项编辑的就是它）
+  jybot.pid            后台服务 PID
+  logs/service.log     服务日志（面板第 8 项查看）
+  paper_trades.json    模拟交易记录（面板第 4 项统计）
+  scripts/place_order.py  实盘下单助手
+  bin/jybot-rs         二进制（面板第 12 项更新时替换此文件）
+```
+
+全局命令 `jybot` 会自动锁定该目录，所以**任意目录敲 `jybot` 都是同一套配置/服务**。
+
+---
+
 ## 手动开始
 
 ```bash

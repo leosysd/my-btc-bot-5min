@@ -122,14 +122,12 @@ fn env_path() -> String {
 }
 
 fn ensure_env() {
+    crate::paths::ensure();
     let p = env_path();
     if !Path::new(&p).exists() {
-        if Path::new(".env.example").exists() {
-            let _ = fs::copy(".env.example", &p);
-            println!("[i] 未找到 .env，已从 .env.example 生成。");
-        } else {
-            let _ = fs::write(&p, "");
-        }
+        // 内嵌默认模板，首次运行即在全局目录生成唯一配置（不依赖外部 .env.example）
+        let _ = fs::write(&p, include_str!("../.env.example"));
+        println!("[i] 已生成全局唯一配置: {p}");
     }
 }
 
@@ -465,24 +463,21 @@ fn asset_name() -> &'static str { "jybot-rs-x86_64-windows.exe" }
 #[cfg(not(target_os = "windows"))]
 fn asset_name() -> &'static str { "jybot-rs-x86_64-linux" }
 
-#[cfg(target_os = "windows")]
-fn bin_path() -> &'static str { "target/release/jybot-rs.exe" }
-#[cfg(not(target_os = "windows"))]
-fn bin_path() -> &'static str { "target/release/jybot-rs" }
-
-/// 从 GitHub Releases 下载最新预编译二进制并替换。
+/// 从 GitHub Releases 下载最新预编译二进制并替换全局二进制（~/.jybot/bin）。
 fn download_release_binary() -> Result<(), String> {
     let url = format!(
         "https://github.com/{}/releases/latest/download/{}",
         repo_slug(),
         asset_name()
     );
-    let dst = bin_path();
-    let tmp = format!("{dst}.new");
-    fs::create_dir_all("target/release").ok();
+    crate::paths::ensure();
+    let dst = crate::paths::binary();
+    let fname = dst.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let tmp = dst.with_file_name(format!("{fname}.new"));
     println!("  下载: {url}");
+    println!("  目标: {}", dst.display());
     let ok = Command::new("curl")
-        .args(["-fL", "--retry", "3", "-o", &tmp, &url])
+        .args(["-fL", "--retry", "3", "-o", &tmp.to_string_lossy(), &url])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -492,9 +487,9 @@ fn download_release_binary() -> Result<(), String> {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let _ = Command::new("chmod").args(["+x", &tmp]).status();
+        let _ = Command::new("chmod").args(["+x", &tmp.to_string_lossy()]).status();
     }
-    fs::rename(&tmp, dst).map_err(|e| format!("替换二进制失败: {e}（Windows 需先退出本面板再更新）"))?;
+    fs::rename(&tmp, &dst).map_err(|e| format!("替换二进制失败: {e}（Windows 需先退出本面板再更新）"))?;
     Ok(())
 }
 

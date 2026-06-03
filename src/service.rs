@@ -11,20 +11,17 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-const PID_FILE: &str = "jybot.pid";
-const LOG_FILE: &str = "logs/service.log";
-
 pub enum Status {
     Stopped,
     Running { pid: u32, mode: String },
 }
 
 fn pid_path() -> PathBuf {
-    PathBuf::from(PID_FILE)
+    crate::paths::pid_file()
 }
 
 pub fn log_path() -> PathBuf {
-    PathBuf::from(LOG_FILE)
+    crate::paths::log_file()
 }
 
 /// 读取 PID 文件 -> (pid, mode)
@@ -82,7 +79,7 @@ pub fn start(mode_flag: &str, assume_yes: bool) -> std::io::Result<u32> {
         ));
     }
 
-    fs::create_dir_all("logs").ok();
+    crate::paths::ensure();
     // 每次启动覆盖日志，避免无限增长
     let log = fs::File::create(log_path())?;
     let log_err = log.try_clone()?;

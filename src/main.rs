@@ -16,6 +16,7 @@ mod config;
 mod executor;
 mod market_ws;
 mod panel;
+mod paths;
 mod price_ws;
 mod service;
 mod signal;
@@ -40,6 +41,14 @@ enum Mode {
 }
 
 fn main() -> Result<()> {
+    paths::ensure(); // 确保全局数据目录（~/.jybot 或 JYBOT_HOME）存在
+    // 首次运行即生成全局唯一配置，保证任何入口（面板/服务/命令行）读到同一份。
+    if std::env::var("JY_ENV_PATH").is_err() {
+        let envf = paths::env_file();
+        if !envf.exists() {
+            let _ = std::fs::write(&envf, include_str!("../.env.example"));
+        }
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let first = args.first().map(|s| s.as_str()).unwrap_or("");
 
