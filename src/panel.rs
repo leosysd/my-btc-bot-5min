@@ -83,13 +83,19 @@ fn groups() -> Vec<(&'static str, Vec<Fld>)> {
 /// 「调策略参数」用的精简字段集。
 fn param_fields() -> Vec<Fld> {
     vec![
+        f("STRATEGY", Kind::Enum(&["momentum", "follow"]), false, "momentum=动量 follow=顺势(复刻JetFadil)"),
+        f("DRIFT_ENTRY_BPS", Kind::Float, false, "follow:窗口涨跌超此bps才顺势接"),
         f("FIXED_SHARES", Kind::Float, false, "每单固定份额"),
         f("ORDER_TYPE", Kind::Enum(&["FOK", "FAK", "GTC"]), false, "订单类型"),
         f("SLIPPAGE_BPS", Kind::Float, false, "滑点(100=1%)"),
         f("MAX_POSITION_USDC", Kind::Float, false, "单仓名义上限"),
         f("MAX_TRADES_PER_MARKET", Kind::Int, false, "每市场最多下单"),
-        f("MIN_ML_EDGE", Kind::Float, false, "最小模型优势"),
-        f("TAKE_PROFIT_PCT", Kind::Float, false, "止盈比例"),
+        f("MIN_ENTRY_PRICE", Kind::Float, false, "最低入场价"),
+        f("MAX_ENTRY_PRICE", Kind::Float, false, "最高入场价(follow:别追太贵)"),
+        f("EARLY_ENTRY_CUTOFF_SEC", Kind::Int, false, "follow:开盘后多少秒才接(等drift)"),
+        f("LATE_ENTRY_CUTOFF_SEC", Kind::Int, false, "距结算多少秒停止进场"),
+        f("MIN_ML_EDGE", Kind::Float, false, "momentum:最小模型优势"),
+        f("TAKE_PROFIT_PCT", Kind::Float, false, "momentum:止盈比例"),
         f("ENABLE_STOP_LOSS", Kind::Bool, false, "是否止损"),
         f("STOP_LOSS_PCT", Kind::Float, false, "止损比例"),
     ]
@@ -611,13 +617,15 @@ fn header() {
     } else {
         "模拟"
     };
+    let strat = get_val("STRATEGY");
+    let strat_label = if strat.eq_ignore_ascii_case("follow") { "顺势(follow)" } else { "动量(momentum)" };
     hr();
     println!("   ☰  JY Bot 管理菜单 (jybot-rs)");
     hr();
     if extra.is_empty() {
-        println!("  服务: {svc}    入场: 动量    DRY_RUN: {dry_label}");
+        println!("  服务: {svc}    入场: {strat_label}    DRY_RUN: {dry_label}");
     } else {
-        println!("  服务: {svc} ({extra})   入场: 动量   DRY_RUN: {dry_label}");
+        println!("  服务: {svc} ({extra})   入场: {strat_label}   DRY_RUN: {dry_label}");
     }
     println!("------------------------------------------------------------");
 }
