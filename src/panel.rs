@@ -439,14 +439,66 @@ fn test_api() {
     });
 }
 
-fn update_program() {
-    if !Path::new(".git").exists() {
-        println!("  [!] 当前目录不是 git 仓库，无法自动更新。");
-        println!("      请用 `git clone` 方式部署，或手动 `git pull && cargo build --release`。");
-        return;
+/// 从 git remote 解析 owner/repo，失败回退默认。
+fn repo_slug() -> String {
+    if let Ok(out) = Command::new("git")
+        .args(["config", "--get", "remote.origin.url"])
+        .output()
+    {
+        if out.status.success() {
+            let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let s = url.trim_end_matches(".git");
+            if let Some(idx) = s.find("github.com") {
+                let tail = &s[idx + "github.com".len()..];
+                let tail = tail.trim_start_matches([':', '/']);
+                if tail.contains('/') {
+                    return tail.to_string();
+                }
+            }
+        }
     }
+    "leosysd/my-btc-bot-5min".to_string()
+}
 
-    // 更新前先停服务（释放旧二进制 / 准备换新版）
+#[cfg(target_os = "windows")]
+fn asset_name() -> &'static str { "jybot-rs-x86_64-windows.exe" }
+#[cfg(not(target_os = "windows"))]
+fn asset_name() -> &'static str { "jybot-rs-x86_64-linux" }
+
+#[cfg(target_os = "windows")]
+fn bin_path() -> &'static str { "target/release/jybot-rs.exe" }
+#[cfg(not(target_os = "windows"))]
+fn bin_path() -> &'static str { "target/release/jybot-rs" }
+
+/// 从 GitHub Releases 下载最新预编译二进制并替换。
+fn download_release_binary() -> Result<(), String> {
+    let url = format!(
+        "https://github.com/{}/releases/latest/download/{}",
+        repo_slug(),
+        asset_name()
+    );
+    let dst = bin_path();
+    let tmp = format!("{dst}.new");
+    fs::create_dir_all("target/release").ok();
+    println!("  下载: {url}");
+    let ok = Command::new("curl")
+        .args(["-fL", "--retry", "3", "-o", &tmp, &url])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        let _ = fs::remove_file(&tmp);
+        return Err("下载失败（可能尚无 release / 网络或代理问题 / 缺 curl）".into());
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = Command::new("chmod").args(["+x", &tmp]).status();
+    }
+    fs::rename(&tmp, dst).map_err(|e| format!("替换二进制失败: {e}（Windows 需先退出本面板再更新）"))?;
+    Ok(())
+}
+
+fn update_program() {
     let was_running = service::is_running();
     if was_running {
         println!("  先停止运行中的服务...");
@@ -454,6 +506,32 @@ fn update_program() {
         std::thread::sleep(std::time::Duration::from_millis(1000));
     }
 
+    println!("  方式①：从 GitHub Releases 拉取预编译二进制（快，无需本机编译）...");
+    match download_release_binary() {
+        Ok(()) => {
+            println!("  [OK] 已更新到最新预编译版本。");
+            if was_running {
+                println!("  用新版本重启服务...");
+                start_service();
+            }
+            println!("  注意：本面板自身仍是旧进程，退出后重新运行 jybot 即用新版面板。");
+        }
+        Err(e) => {
+            println!("  [!] 预编译方式不可用：{e}");
+            println!("  改用方式②：源码 git pull + 编译...");
+            update_from_source(was_running);
+        }
+    }
+}
+
+fn update_from_source(was_running: bool) {
+    if !Path::new(".git").exists() {
+        println!("  [!] 非 git 仓库，且预编译不可用。请重新下载 release 包部署。");
+        if was_running {
+            start_service();
+        }
+        return;
+    }
     println!("  $ git pull --ff-only");
     let pull_ok = Command::new("git")
         .args(["pull", "--ff-only"])
@@ -461,37 +539,30 @@ fn update_program() {
         .map(|s| s.success())
         .unwrap_or(false);
     if !pull_ok {
-        println!("  [!] git pull 失败（本地有改动或网络问题）。");
-        println!("      可手动处理: git stash && git pull && git stash pop");
+        println!("  [!] git pull 失败。可手动: git stash && git pull && git stash pop");
         if was_running {
-            println!("  正在用旧版本恢复服务...");
             start_service();
         }
         return;
     }
-
-    println!("  $ cargo build --release  （可能需要几分钟）");
+    println!("  $ cargo build --release （可能数分钟，且需已装 Rust）");
     let build_ok = Command::new("cargo")
         .args(["build", "--release"])
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
     if !build_ok {
-        println!("  [!] 编译失败（见上方错误）。旧版本不受影响。");
-        println!("      Windows 提示：若是 exe 被占用，先退出本面板再更新。");
+        println!("  [!] 编译失败或未装 Rust。旧版本不受影响。");
         if was_running {
             start_service();
         }
         return;
     }
-
-    println!("  [OK] 已拉取最新代码并编译成功。");
+    println!("  [OK] 源码更新并编译完成。");
     if was_running {
-        println!("  用新版本重启服务...");
         start_service();
     }
-    println!("  注意：本菜单自身仍是更新前的进程；请『0 退出』后重新运行");
-    println!("        ./target/release/jybot-rs 以使用最新面板。");
+    println!("  注意：本面板自身仍是旧进程，退出后重新运行 jybot 即用新版面板。");
 }
 
 fn view_config() {

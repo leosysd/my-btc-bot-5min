@@ -48,7 +48,10 @@
 
 ---
 
-## 一键安装（从 GitHub 直接编译）
+## 一键安装（拉 GitHub 预编译二进制，VPS 免装 Rust / 免编译）
+
+二进制由 **GitHub Actions 云端编译**并发布到 **Releases**。VPS 直接拉现成的，
+小内存机器也不会因编译 OOM。
 
 ```bash
 git clone https://github.com/leosysd/my-btc-bot-5min.git jybot-rs
@@ -56,11 +59,18 @@ cd jybot-rs
 bash install.sh
 ```
 
-`install.sh` 自动完成：装 Rust 工具链 → `cargo build --release` → 生成 `.env`
-→ 安装全局命令 `jybot` → 校验配置。装好后任意目录敲 **`jybot`** 即可打开管理面板。
+`install.sh` 流程：**优先从 Releases 下载预编译二进制**（拉不到才回退装 Rust 编译）
+→ 生成 `.env` → 安装全局命令 `jybot` → 校验配置。装好后任意目录敲 **`jybot`** 进面板。
 
-> 更新：以后在面板里选 **「12. 更新程序」** 一键 `git pull + 重新编译 + 重启服务`；
-> 或命令行 `git pull && cargo build --release`。你的 `.env` 不会被覆盖。
+> **更新**：面板选 **「12. 更新程序」** —— 优先**下载最新预编译二进制**（秒级、免编译）
+> → 自动重启服务；拉不到才回退源码编译。你的 `.env` 永远不会被覆盖。
+
+### 发布新版本（维护者）
+
+```bash
+git tag v0.1.1 && git push origin v0.1.1   # 打 tag 即触发云端编译 + 发布 Release
+```
+CI 配置见 `.github/workflows/release.yml`（Linux + Windows 二进制）。
 
 ---
 
